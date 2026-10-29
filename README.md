@@ -24,11 +24,11 @@ node usage-server.js
 
 | 来源 | 说明 | 配置 |
 |---|---|---|
-| 会话 transcript | Claude Code 兼容格式的 `*.jsonl`，逐行含 `message.usage`（input_tokens / cache_read_input_tokens / output_tokens）与 `providerData.model` | 默认扫描 `~/.workbuddy/projects`，可用 `USAGE_TRANSCRIPT_DIR` 覆盖 |
-| 附加 JSONL | 自定义调用日志，每行 `{ "ts": ..., "tokens": {"in":..,"out":..}, "costCNY":.. }` 或按模型细分的 `{ "ts":..., "tokensByModel": {"模型名":{"tin":..,"tout":..,"cost":..}} }` | `USAGE_EXTRA_JSONL="a.jsonl,b.jsonl"` |
-| 账本 ledger.json | 可选，放上级目录：`{ "since": "2026-09-01", "任意分项名": {"costCNY": 123.4}, ... }`，费用面板逐项展示 | 文件路径固定为上级目录 `ledger.json` |
+| 会话 transcript（主来源） | Claude Code 兼容格式的 `*.jsonl`，逐行含 `message.usage`（input_tokens / cache_read_input_tokens / output_tokens）与 `providerData.model` | 默认扫描 `~/.workbuddy/projects`，可用 `USAGE_TRANSCRIPT_DIR` 覆盖 |
+| 附加 JSONL（可选扩展） | 自己另有按量记账的调用日志（脚本、机器人等）才用得上，没有就完全忽略。每行 `{ "ts": ..., "tokens": {"in":..,"out":..}, "costCNY":.. }` 或按模型细分的 `{ "ts":..., "tokensByModel": {"模型名":{"tin":..,"tout":..,"cost":..}} }` | `USAGE_EXTRA_JSONL="a.jsonl,b.jsonl"` |
+| 账本 ledger.json（可选） | 放上级目录：`{ "since": "2026-09-01", "任意分项名": {"costCNY": 123.4}, ... }`，费用面板逐项展示 | 文件路径固定为上级目录 `ledger.json` |
 
-三个来源物理隔离、按模型名合并展示，同一调用只应存在于一个来源，避免重复计数。
+只有会话 transcript 是必需的；附加 JSONL 与 ledger 配置了才参与合并展示，各来源按模型名合并、同一调用只应存在于一个来源，避免重复计数。
 
 ## 环境变量
 

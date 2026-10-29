@@ -163,6 +163,7 @@ function collect() {
   const wbToday = wb.days.get(todayK) || { in: 0, out: 0, cached: 0, cost: 0, n: 0 };
   cache = { at: Date.now(), data: {
     updated: new Date().toLocaleString('zh-CN'),
+    extra: EXTRA.length,
     today, total: { in: tin, out: tout, cost, n },
     wb: { warmed: wb.warmed, today: wbToday, total: wb.total },
     days: [...days.entries()].sort().map(([d, v]) => ({ d, ...v })),
@@ -210,7 +211,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 @media(max-width:760px){.coins{grid-template-columns:repeat(2,1fr)}}
 </style></head><body>
 <h1>Token 用量统计</h1>
-<div class="sub">会话 transcript + 附加数据源逐条精确 Token · 每 5 秒自动刷新 <span id="pulse"></span> · <span id="upd"></span></div>
+<div class="sub">逐条精确 Token 统计 · 每 5 秒自动刷新 <span id="pulse"></span> · <span id="upd"></span></div>
 <div class="metrics" id="metrics"></div>
 <div class="panel"><div class="pt">Token 活跃 <span class="desc" id="hmMax"></span></div>
 <div class="hmgrid" id="hm"></div><div class="mlabels" id="hmM"></div>
@@ -223,7 +224,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 <div class="pills" id="msel" style="flex-wrap:wrap;margin:4px 0 12px"></div><div id="mbars"></div></div>
 <div class="panel"><div class="pt">费用 <span class="desc" id="coinsSince"></span></div><div class="coins" id="coins"></div>
 <div class="desc" style="margin-top:8px">费用只对配置了价目的模型折算（缓存命中按命中价）；无价目模型只计 token 不折钱。</div></div>
-<div class="foot">数据源：transcript jsonl usage + 附加 JSONL + ledger.json · node usage-server.js</div>
+<div class="foot">数据源：会话 transcript usage jsonl（可选扩展：附加 JSONL / ledger.json） · node usage-server.js</div>
 <div id="tip"></div>
 <script>
 var COL={Qwen:'#4c8dff','custom-local:Qwen':'#8fb8ff',DeepSeek:'#f0b35c',GLM:'#7ee0a3',unknown:'#667391'};
@@ -244,10 +245,11 @@ function metrics(d){
   var topM=d.models[0]?d.models[0].m:'-';
   var wbT=d.wb?d.wb.today:{in:0,out:0,cached:0,n:0};
   var wbAll=d.wb?d.wb.total:{cached:0};
-  var items=[['Token 消耗总量',fN(tot),''],['今日 Token',fN(d.today.in+d.today.out),''],
-   ['会话源今日',fN(wbT.in+wbT.out),'p'],['附加源今日',fN(d.today.in+d.today.out-wbT.in-wbT.out),'b'],
+  var items=[['Token 消耗总量',fN(tot),''],['今日 Token',fN(d.today.in+d.today.out),'']];
+  if(d.extra){items.push(['会话源今日',fN(wbT.in+wbT.out),'p'],['附加源今日',fN(d.today.in+d.today.out-wbT.in-wbT.out),'b'])}
+  items=items.concat([
    ['缓存命中·今日',fN(wbT.cached),'p'],['缓存命中·累计',fN(wbAll.cached),'p'],['对话数',d.total.n.toLocaleString('zh-CN'),'b'],
-   ['活跃天数',d.days.length,''],['连续活跃',streak(d.days)+' 天',''],['主力模型',topM,'']];
+   ['活跃天数',d.days.length,''],['连续活跃',streak(d.days)+' 天',''],['主力模型',topM,'']]);
   document.getElementById('metrics').innerHTML=items.map(function(x){return '<div class="mt"><div class="lb">'+x[0]+'</div><div class="v '+x[2]+'">'+x[1]+'</div></div>'}).join('');
 }
 function heatmap(d){
