@@ -1,0 +1,13 @@
+{
+  "name": "token-dashboard",
+  "version": "1.0.0",
+  "description": "本地实时 Token 用量看板：会话 transcript + 附加 JSONL，指标卡/热力图/趋势/模型分解条形图，零依赖",
+  "main": "usage-server.js",
+  "scripts": {
+    "start": "node usage-server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

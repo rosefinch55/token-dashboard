@@ -1,0 +1,5 @@
+node_modules/
+ledger.json
+*.log
+*.ico
+.DS_Store
