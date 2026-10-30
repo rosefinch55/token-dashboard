@@ -377,10 +377,19 @@ addEventListener('hashchange',function(){SELM=decodeURIComponent(location.hash.s
 tick();setInterval(tick,5000);
 </script></body></html>`;
 
+function _elog(e){ try{ require('fs').appendFileSync(require('path').join(__dirname,'usage-server.err.log'), new Date().toISOString()+' '+((e&&(e.stack||e.message))||e)+'\n'); }catch(_){} }
+process.on('uncaughtException', (e)=>_elog(e));
+process.on('unhandledRejection', (r)=>_elog(r));
+const IDLE_MS = +(process.env.USAGE_IDLE_MS || 0);   // >0：连续无访问超过该毫秒数则自退（按需启动场景）；0=常驻不关
+let lastHit = Date.now();
 const srv = http.createServer((req, res) => {
-  if (req.url.startsWith('/api/data')) { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(collect())); }
-  else if (req.url === '/' || req.url.startsWith('/index')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(HTML); }
-  else { res.writeHead(404); res.end(); }
+  lastHit = Date.now();
+  try {
+    if (req.url.startsWith('/api/data')) { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(collect())); }
+    else if (req.url === '/' || req.url.startsWith('/index')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(HTML); }
+    else { res.writeHead(404); res.end(); }
+  } catch (e) { _elog(e); try { res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' }); res.end('{"error":"collect failed"}'); } catch (_) {} }
 });
-srv.on('error', (e) => { if (e.code === 'EADDRINUSE') process.exit(0); throw e; });   // 已有实例在跑 → 静默退出
+srv.on('error', (e) => { if (e.code === 'EADDRINUSE') process.exit(0); _elog(e); });   // 已有实例在跑 → 静默退出（重复触发免疫）；其它监听错误仅记录不崩
 srv.listen(PORT, '127.0.0.1', () => console.log('用量看板 http://127.0.0.1:' + PORT));
+if (IDLE_MS > 0) setInterval(() => { if (Date.now() - lastHit > IDLE_MS) { _elog('空闲 ' + Math.round(IDLE_MS / 1000) + 's 无访问，自动退出'); process.exit(0); } }, 30000).unref();

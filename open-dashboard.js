@@ -19,6 +19,7 @@ function alive() {
   } else {
     const child = spawn(process.execPath, [path.join(__dirname, 'usage-server.js')], {
       cwd: __dirname, detached: true, stdio: 'ignore', windowsHide: true,
+      env: Object.assign({}, process.env, { USAGE_IDLE_MS: process.env.USAGE_IDLE_MS || '180000' }),
     });
     child.on('error', () => {});
     child.unref();

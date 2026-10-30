@@ -40,6 +40,7 @@ node usage-server.js
 | `USAGE_PRICED_MODEL` | 空 | 填模型名后对该模型按价目折算费用，默认所有模型只计 token 不折钱 |
 | `USAGE_PRICE_CUT` | 远期日期 | 价目切换日（网关调过价才需要设置） |
 | `USAGE_DAYS` | `45` | transcript 统计窗口（天） |
+| `USAGE_IDLE_MS` | `0` | >0 时启用空闲自退：连续无 HTTP 访问超过该毫秒数即自动退出（配合按需启动，关掉页面后约几分钟释放）；`0`=常驻。`open-dashboard.js` 按需拉起时默认置 `180000`（3 分钟） |
 
 价目表在 `usage-server.js` 顶部 `P_OLD` / `P_NEW` 常量中修改（单位 ¥/M token，默认为占位示例值，接入自家计费网关前请按实际价目替换）。
 
