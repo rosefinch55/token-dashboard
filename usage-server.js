@@ -190,6 +190,12 @@ h1{font-size:18px;font-weight:600}
 .pills{display:inline-flex;background:#0f1626;border:1px solid #223052;border-radius:8px;padding:2px;gap:2px}
 .pills button{background:transparent;border:none;color:#7d8aa5;font-size:11.5px;padding:2px 10px;border-radius:6px;cursor:pointer}
 .pills button.on{background:#233150;color:#dbe4f3}
+.tfam{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
+.tpill{display:inline-flex;align-items:center;gap:5px;background:#0f1626;border:1px solid #223052;color:#aab6cf;font-size:11px;padding:3px 9px;border-radius:14px;cursor:pointer;user-select:none;transition:opacity .15s}
+.tpill i{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.tpill:hover{border-color:#33436b}
+.tpill.off{opacity:.38;text-decoration:line-through}
+.tpill.rst{color:#7ee0a3;border-color:#25443a}
 .hmgrid{display:grid;grid-template-rows:repeat(7,12px);grid-auto-flow:column;grid-auto-columns:12px;gap:3px;overflow-x:auto;padding-bottom:2px}
 .hc{width:12px;height:12px;border-radius:3px;background:transparent;position:relative}
 .hc.fill{background:#182032}
@@ -217,7 +223,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 <div class="hmgrid" id="hm"></div><div class="mlabels" id="hmM"></div>
 <div class="legend">少 <i style="background:#182032"></i><i style="background:rgba(29,78,216,.4)"></i><i style="background:rgba(76,141,255,.55)"></i><i style="background:#4c8dff"></i><i style="background:#7ee0a3"></i> 多</div></div>
 <div class="panel"><div class="pt">每日 Token 趋势图 <span class="pills" id="rng"><button data-n="7" class="on">近 7 日</button><button data-n="30">近 30 日</button></span></div>
-<div class="desc" id="tinfo"></div><div id="trend"></div></div>
+<div class="desc" id="tinfo"></div><div class="tfam" id="tfam"></div><div id="trend"></div></div>
 <div class="panel"><div class="pt">模型用量</div><div class="desc">各数据源按真实模型名合并（token 无重叠：数据源物理隔离）</div>
 <div class="flex"><div id="pie" style="width:230px"></div><div class="mods" id="mods"></div></div></div>
 <div class="panel"><div class="pt">模型 Token 分解</div><div class="desc">点选模型查看输入未缓存 / 输入缓存命中 / 输出的条形占比（缓存数据取决于来源是否回报）</div>
@@ -230,7 +236,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 var COL={Qwen:'#4c8dff','custom-local:Qwen':'#8fb8ff',DeepSeek:'#f0b35c',GLM:'#7ee0a3',unknown:'#667391'};
 var PAL=['#4c8dff','#7ee0a3','#f0b35c','#c792ea','#5fd4d4','#e07bb0','#a78bfa','#f472b6','#facc15','#6ee7b7','#8fb8ff','#fb923c','#667391'];
 function colOf(m,i){return COL[m]||PAL[i%PAL.length]}
-var D=null, RANGE=7, SELM=decodeURIComponent((location.hash||'').replace(/^#/,''));
+var D=null, RANGE=7, THIDE={}, SELM=decodeURIComponent((location.hash||'').replace(/^#/,''));
 function fN(v){return v>=1e8?(v/1e8).toFixed(2)+' 亿':v>=1e4?(v/1e4).toFixed(1)+' 万':String(v)}
 function fY(v){return '¥'+v.toLocaleString('zh-CN',{maximumFractionDigits:v>=100?0:2})}
 var tip=document.getElementById('tip');
@@ -284,21 +290,27 @@ function heatmap(d){
 function trend(d){
   var rows=d.days.slice(-RANGE);
   var W2=function(mb){return (mb.tin||0)+(mb.tcache||0)+(mb.tout||0)};
-  var fams={};for(var i=0;i<rows.length;i++)for(var f in rows[i].models)fams[f]=1;
-  var fl=Object.keys(fams);
-  var maxV=1;for(var i=0;i<rows.length;i++)for(var j=0;j<fl.length;j++){var mb=rows[i].models[fl[j]]||{};var w=W2(mb);if(w>maxV)maxV=w}
+  var fcol=function(f){return COL[f]||'#667391'};
+  var famTot={};for(var i=0;i<rows.length;i++)for(var f in rows[i].models)famTot[f]=(famTot[f]||0)+W2(rows[i].models[f]);
+  var fl=Object.keys(famTot).sort(function(a,b){return famTot[b]-famTot[a]});
+  var shown=fl.filter(function(f){return !THIDE[f]});
+  var anyHidden=shown.length!==fl.length;
+  var pills=fl.map(function(f){return '<span class="tpill'+(THIDE[f]?' off':'')+'" data-f="'+encodeURIComponent(f)+'"><i style="background:'+fcol(f)+'"></i>'+f+'</span>'}).join('');
+  if(anyHidden)pills+='<span class="tpill rst" data-f="__all">全部显示</span>';
+  var tfam=document.getElementById('tfam');tfam.innerHTML=pills;
+  var maxV=1;for(var i=0;i<rows.length;i++)for(var j=0;j<shown.length;j++){var mb=rows[i].models[shown[j]]||{};var w=W2(mb);if(w>maxV)maxV=w}
   var pk=rows.reduce(function(a,b){return (b.in+b.out)>(a.in+a.out)?b:a},{d:'-',in:0,out:0});
-  document.getElementById('tinfo').textContent='共 '+d.days.length+' 天 · 峰值 '+pk.d.slice(5)+' '+fN(pk.in+pk.out)+' · Y 轴按单模型折线峰值定标';
+  document.getElementById('tinfo').textContent='共 '+d.days.length+' 天 · 峰值 '+pk.d.slice(5)+' '+fN(pk.in+pk.out)+' · '+(anyHidden?('已选 '+shown.length+'/'+fl.length+' 个模型 · Y 轴随所选定标（点模型名可显示/隐藏）'):'Y 轴按单模型折线峰值定标 · 点下方模型名可筛选');
   var W=680,H=185,P=46;
   var xs=function(i){return rows.length<2?W/2:P+i*(W-P*2)/(rows.length-1)};
   var ys=function(v){return H-28-(v/maxV)*(H-56)};
   var svg='<svg viewBox="0 0 '+W+' '+H+'">';
   svg+='<text x="6" y="16" class="ax">'+fN(maxV)+'</text><text x="6" y="'+(H-24)+'" class="ax">0</text>';
-  for(var j=0;j<fl.length;j++){var f=fl[j];var pts=[];
+  for(var j=0;j<shown.length;j++){var f=shown[j];var col=fcol(f);var pts=[];
     for(var i=0;i<rows.length;i++){var mb2=rows[i].models[f]||{};pts.push(xs(i).toFixed(1)+','+ys(W2(mb2)).toFixed(1))}
-    svg+='<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+(COL[f]||'#667391')+'" stroke-width="2"/>';
+    svg+='<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="2"/>';
     for(var i=0;i<rows.length;i++){var mb3=rows[i].models[f]||{};var v2=W2(mb3);
-      svg+='<circle cx="'+xs(i).toFixed(1)+'" cy="'+ys(v2).toFixed(1)+'" r="3" fill="'+(COL[f]||'#667391')+'" data-k="'+rows[i].d+'\\n'+f+': '+fN(v2)+' tok"/>'}
+      svg+='<circle cx="'+xs(i).toFixed(1)+'" cy="'+ys(v2).toFixed(1)+'" r="3" fill="'+col+'" data-k="'+rows[i].d+'\\n'+f+': '+fN(v2)+' tok"/>'}
   }
   svg+='<line x1="'+P+'" y1="'+(H-28)+'" x2="'+(W-P)+'" y2="'+(H-28)+'" stroke="#2a3350"/>';
   for(var i=0;i<rows.length;i++){var st=RANGE===7?1:Math.ceil(rows.length/8);
@@ -358,6 +370,8 @@ function render(){if(!D)return;metrics(D);heatmap(D);trend(D);pie(D);breakdown(D
 async function tick(){try{D=await (await fetch('/api/data')).json();document.getElementById('pulse').className='on';render()}catch(e){document.getElementById('pulse').className=''}}
 document.getElementById('rng').onclick=function(e){var b=e.target.closest('button');if(!b)return;RANGE=+b.dataset.n;
   var bs=this.querySelectorAll('button');for(var i=0;i<bs.length;i++)bs[i].className=bs[i]===b?'on':'';if(D)trend(D)};
+document.getElementById('tfam').onclick=function(e){var b=e.target.closest('.tpill');if(!b)return;var f=b.dataset.f;
+  if(f==='__all'){THIDE={}}else{var k=decodeURIComponent(f);if(THIDE[k])delete THIDE[k];else THIDE[k]=1}if(D)trend(D)};
 document.getElementById('msel').onclick=function(e){var b=e.target.closest('button');if(!b)return;SELM=b.dataset.m;history.replaceState(null,'','#'+encodeURIComponent(SELM));if(D)breakdown(D)};
 addEventListener('hashchange',function(){SELM=decodeURIComponent(location.hash.slice(1));if(D)breakdown(D)});
 tick();setInterval(tick,5000);
