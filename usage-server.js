@@ -393,3 +393,5 @@ const srv = http.createServer((req, res) => {
 srv.on('error', (e) => { if (e.code === 'EADDRINUSE') process.exit(0); _elog(e); });   // 已有实例在跑 → 静默退出（重复触发免疫）；其它监听错误仅记录不崩
 srv.listen(PORT, '127.0.0.1', () => console.log('用量看板 http://127.0.0.1:' + PORT));
 if (IDLE_MS > 0) setInterval(() => { if (Date.now() - lastHit > IDLE_MS) { _elog('空闲 ' + Math.round(IDLE_MS / 1000) + 's 无访问，自动退出'); process.exit(0); } }, 30000).unref();
+// 启动即后台预热：不等前端轮询，主动多轮增量扫描直到完成（每轮预算 500ms，事件循环其余时间照常响应）
+if (!wb.warmed) { const _warm = setInterval(() => { try { wbScan(500); } catch (e) { _elog(e); } if (wb.warmed) { clearInterval(_warm); _elog('预热完成 n=' + wb.total.n); } }, 150); _warm.unref(); }
