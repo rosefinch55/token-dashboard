@@ -4,7 +4,8 @@
 
 ## 功能
 
-- **概览指标卡**：总消耗 / 今日 / 各数据源今日 / 缓存命中（今日与累计）/ 对话数 / 活跃与连续天数 / 主力模型
+- **概览指标卡**：总消耗 / 今日 / WorkBuddy 与 DSH 各源今日 / 缓存命中（今日与累计）/ 对话数 / 活跃与连续天数 / 主力模型
+- **数据源拆分查看**：顶部「全部来源 / WorkBuddy / DSH」开关，所有面板（指标卡、热力图、趋势、环形图、分解条）随所选来源整体切换
 - **52 周活跃热力图**：GitHub 式网格，悬浮查看每日用量
 - **每日趋势折线**：近 7 / 30 日切换，按模型分线；点模型名可显示/隐藏对应折线，Y 轴随所选模型重新定标
 - **模型用量环形图 + 排行**：按真实模型名聚合
@@ -25,6 +26,7 @@ node usage-server.js
 | 来源 | 说明 | 配置 |
 |---|---|---|
 | 会话 transcript（主来源） | Claude Code 兼容格式的 `*.jsonl`，逐行含 `message.usage`（input_tokens / cache_read_input_tokens / output_tokens）与 `providerData.model` | 默认扫描 `~/.workbuddy/projects`，可用 `USAGE_TRANSCRIPT_DIR` 覆盖 |
+| DSH 会话（DeepSeek Harness） | `~/.dsh/sessions/<工作区>/<会话>/session.v4.jsonl.zstd`，多帧 zstd 归档；`assistant/*` 行的 `data.usage` 记 token，模型显示为 `provider:model`（如 `csu:GLM`=走校园网关配额、`workbuddy-global:*`=官方通道）。按帧切分后用 Node 内建 zstd 解压，行指纹去重防整写重写双计 | 默认自动启用（目录不存在则静默跳过），`USAGE_DSH_DIR` 覆盖路径、`USAGE_DSH_DIR=off` 关闭 |
 | 附加 JSONL（可选扩展） | 自己另有按量记账的调用日志（脚本、机器人等）才用得上，没有就完全忽略。每行 `{ "ts": ..., "tokens": {"in":..,"out":..}, "costCNY":.. }` 或按模型细分的 `{ "ts":..., "tokensByModel": {"模型名":{"tin":..,"tout":..,"cost":..}} }` | `USAGE_EXTRA_JSONL="a.jsonl,b.jsonl"` |
 | 账本 ledger.json（可选） | 放上级目录：`{ "since": "2026-09-01", "任意分项名": {"costCNY": 123.4}, ... }`，费用面板逐项展示 | 文件路径固定为上级目录 `ledger.json` |
 
@@ -36,6 +38,7 @@ node usage-server.js
 |---|---|---|
 | `USAGE_PORT` | `4620` | 监听端口（仅绑定 127.0.0.1） |
 | `USAGE_TRANSCRIPT_DIR` | `~/.workbuddy/projects` | transcript 根目录 |
+| `USAGE_DSH_DIR` | `~/.dsh/sessions` | DSH 会话根目录；`off`=关闭 DSH 源 |
 | `USAGE_EXTRA_JSONL` | 空 | 附加 JSONL，逗号分隔 |
 | `USAGE_PRICED_MODEL` | 空 | 填模型名后对该模型按价目折算费用，默认所有模型只计 token 不折钱 |
 | `USAGE_PRICE_CUT` | 远期日期 | 价目切换日（网关调过价才需要设置） |
@@ -91,4 +94,4 @@ Register-ScheduledTask -TaskName TokenDashboard -Action $a -Settings $s -Force
 
 - 数据只读本机文件，服务仅监听 127.0.0.1，无任何外发
 - 缓存命中量计入输入侧总量，同时在看板单独展示
-- 需要 Node.js ≥ 18
+- 需要 Node.js ≥ 18；DSH 源用到 `zlib.zstdDecompressSync` 与 `zlib.crc32`，需 Node ≥ 22.15（无此版本时 DSH 源解压失败为空，其余功能不受影响）
