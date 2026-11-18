@@ -7,7 +7,7 @@
 //   ③ ledger.json（可选，放在本文件上级目录）：{ since, 任意名称:{costCNY}, ... }，费用面板逐项展示
 //   ④ DSH（DeepSeek Harness）会话：~/.dsh/sessions/<工作区>/<会话>/session.v4.jsonl.zstd
 //      zstd 压缩，行型 assistant/* 的 data.usage 记 token、data.message.source 记 provider:model；
-//      面板顶部「全部/WorkBuddy/DSH」可拆分查看（USAGE_DSH_DIR 可覆盖目录、置 none 关闭）
+//      面板顶部「全部/WorkBuddy/DSH/Codex」可拆分查看（USAGE_DSH_DIR 可覆盖目录、置 none 关闭）
 // 用法：node usage-server.js   浏览器开 http://127.0.0.1:4620
 const http = require('http');
 const fs = require('fs');
@@ -21,6 +21,8 @@ const EXTRA = (process.env.USAGE_EXTRA_JSONL || '').split(',').map((s) => s.trim
 const WB_WINDOW_MS = 45 * 864e5;                          // 只统计近 45 天活跃的 transcript
 const DSH_DIR = process.env.USAGE_DSH_DIR === 'off' ? '' : (process.env.USAGE_DSH_DIR || path.join(os.homedir(), '.dsh', 'sessions'));
 const DSH_FILE_MAX = 64 * 1024 * 1024;                    // 单个 zstd 归档超 64MB 视为异常跳过
+// Codex（Desktop/++共享 ~/.codex）：sessions/YYYY/MM/DD 分层 + archived_sessions 平铺，两目录都扫
+const CODEX_DIRS = process.env.USAGE_CODEX_DIR === 'off' ? [] : [process.env.USAGE_CODEX_DIR || path.join(os.homedir(), '.codex', 'sessions'), path.join(os.homedir(), '.codex', 'archived_sessions')];
 // ── 费用折算（可选）：只有设置了 USAGE_PRICED_MODEL 才对该模型按价目折钱，其余只计 token ──
 const PRICED_MODEL = process.env.USAGE_PRICED_MODEL || '';      // 走计费网关、需要折钱的模型名（如某付费 API 模型）
 const PRICE_CUT = Date.parse(process.env.USAGE_PRICE_CUT || '2099-01-01T00:00:00+08:00'); // 价目切换日（调过价再设）
@@ -204,10 +206,76 @@ async function dshScan(budgetMs) {                       // 单轮预算内处�
   } finally { dshBusy = false; }
 }
 
+// ── Codex 会话扫描器（rollout-*.jsonl 追加写，字节 offset 增量）──
+// 用量在 event_msg/token_count 行的 payload.info.last_token_usage（每请求增量，
+// total_token_usage 是会话累计不能用）；total = input + cached + output + reasoning。
+// 模型名取 turn_context.payload.model 并跨行保留；pricing 复用全局 USAGE_PRICED_MODEL 机制。
+const codex = { off: new Map(), st: new Map(), warmed: !CODEX_DIRS.length, days: new Map(), total: { in: 0, out: 0, cached: 0, cost: 0, n: 0 }, models: new Map() };
+function codexListFiles() {
+  const out = [];
+  for (const dir of CODEX_DIRS) {
+    let ws; try { ws = fs.readdirSync(dir); } catch (e) { continue; }
+    for (const w of ws) {
+      const p1 = path.join(dir, w);
+      let st1; try { st1 = fs.statSync(p1); } catch (e) { continue; }
+      if (st1.isFile()) { if (w.endsWith('.jsonl')) out.push(p1); continue; }      // archived_sessions 平铺
+      let ms; try { ms = fs.readdirSync(p1); } catch (e) { continue; }
+      for (const m2 of ms) {
+        const p2 = path.join(p1, m2);
+        let st2; try { st2 = fs.statSync(p2); } catch (e) { continue; }
+        if (st2.isFile()) { if (m2.endsWith('.jsonl')) out.push(p2); continue; }
+        let fl; try { fl = fs.readdirSync(p2); } catch (e) { continue; }           // sessions/YYYY/MM/DD 三层
+        for (const f of fl) if (f.endsWith('.jsonl')) out.push(path.join(p2, f));
+      }
+    }
+  }
+  out.sort((a, b) => { try { return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs; } catch (e) { return 0; } });
+  return out;
+}
+function codexLine(r, st) {
+  const p = r.payload; if (!p) return;
+  if (r.type === 'turn_context' && p.model) st.model = p.model;
+  else if (r.type === 'session_meta' && p.model && !st.model) st.model = p.model;
+  if (r.type !== 'event_msg' || p.type !== 'token_count') return;
+  const u = p.info && p.info.last_token_usage; if (!u) return;
+  const inp = u.input_tokens || 0, cache = u.cached_input_tokens || 0;
+  const outp = (u.output_tokens || 0) + (u.reasoning_output_tokens || 0);   // 计费含思考段
+  if (!inp && !cache && !outp) return;
+  addRec(codex, r.timestamp || Date.now(), st.model || 'unknown', inp, cache, outp);
+}
+function codexScan(budgetMs) {
+  const t0 = Date.now();
+  for (const fp of codexListFiles()) {
+    let s; try { s = fs.statSync(fp); } catch (e) { continue; }
+    let prev = codex.off.get(fp) || 0;
+    if (s.size < prev) prev = 0;                        // 截断重写：整读
+    if (s.size === prev && codex.off.has(fp)) continue; // 无增量
+    try {
+      const fd = fs.openSync(fp, 'r');
+      const buf = Buffer.alloc(s.size - prev);
+      fs.readSync(fd, buf, 0, s.size - prev, prev);
+      fs.closeSync(fd);
+      const text = buf.toString('utf8');
+      const nl = text.lastIndexOf('\n');
+      if (nl < 0) continue;                             // 不足一行，下轮再读
+      const full = text.slice(0, nl);
+      codex.off.set(fp, prev + Buffer.byteLength(full) + 1);
+      let st = codex.st.get(fp); if (!st) { st = { model: '' }; codex.st.set(fp, st); }
+      for (const ln of full.split('\n')) {
+        if (ln.indexOf('"token_count"') < 0 && ln.indexOf('"turn_context"') < 0) continue;
+        try { codexLine(JSON.parse(ln), st); } catch (e) {}
+      }
+    } catch (e) { /* 单文件失败不致命 */ }
+    if (Date.now() - t0 > budgetMs) return;
+  }
+  if (!codex.warmed) codex.warmed = true;
+}
+
 let cache = { at: 0, data: null };
 function collect() {
   if (Date.now() - cache.at < 3000 && cache.data) return cache.data;
   wbScan(400);
+  codexScan(200);   // Codex 会话同步增量（文件少、单轮足够）
   const days = new Map();
   const models = new Map();
   let n = 0;
@@ -270,6 +338,23 @@ function collect() {
     }
     n += dsh.total.n;
   }
+  // Codex 并入：同款三桶聚合（rollout 与 transcript/dsh 物理隔离不重叠）
+  if (codex.total.n) {
+    for (const [k, d] of codex.days) {
+      const rec = days.get(k) || { in: 0, out: 0, cost: 0, n: 0, models: {} };
+      rec.in += d.in; rec.out += d.out; rec.cost += d.cost; rec.n += d.n;
+      for (const [m, v] of Object.entries(d.models)) {
+        const mb = rec.models[m] || (rec.models[m] = { tin: 0, tcache: 0, tout: 0 });
+        mb.tin += v.tin; mb.tcache += v.tcache; mb.tout += v.tout;
+      }
+      days.set(k, rec);
+    }
+    for (const [m, v] of codex.models) {
+      const g = models.get(m) || (models.set(m, { tin: 0, tcache: 0, tout: 0, cost: 0 }), models.get(m));
+      g.tin += v.tin; g.tcache = (g.tcache || 0) + v.tcache; g.tout += v.tout; g.cost += v.cost;
+    }
+    n += codex.total.n;
+  }
   let tin = 0, tout = 0, cost = 0;
   for (const d of days.values()) { tin += d.in; tout += d.out; cost += d.cost; }
   let L = {};
@@ -281,6 +366,7 @@ function collect() {
   const today = days.get(todayK) || { in: 0, out: 0, cost: 0, n: 0, models: {} };
   const wbToday = wb.days.get(todayK) || { in: 0, out: 0, cached: 0, cost: 0, n: 0 };
   const dshToday = dsh.days.get(todayK) || { in: 0, out: 0, cached: 0, cost: 0, n: 0 };
+  const codexToday = codex.days.get(todayK) || { in: 0, out: 0, cached: 0, cost: 0, n: 0 };
   const mSort = (m) => [...m.entries()].sort((a, b) => (b[1].tin + (b[1].tcache || 0) + b[1].tout) - (a[1].tin + (a[1].tcache || 0) + a[1].tout)).map(([k, v]) => ({ m: k, ...v }));
   const dArr = (store) => [...store.days.entries()].sort().map(([d, v]) => ({ d, ...v }));
   cache = { at: Date.now(), data: {
@@ -289,9 +375,11 @@ function collect() {
     today, total: { in: tin, out: tout, cost, n },
     wb: { warmed: wb.warmed, today: wbToday, total: wb.total },
     dsh: { warmed: dsh.warmed, today: dshToday, total: dsh.total },
+    codex: { warmed: codex.warmed, today: codexToday, total: codex.total },
     bySrc: {
       wb: { days: dArr(wb), models: mSort(wb.models), total: { ...wb.total }, today: { ...wbToday } },
       dsh: { days: dArr(dsh), models: mSort(dsh.models), total: { ...dsh.total }, today: { ...dshToday } },
+      codex: { days: dArr(codex), models: mSort(codex.models), total: { ...codex.total }, today: { ...codexToday } },
     },
     days: [...days.entries()].sort().map(([d, v]) => ({ d, ...v })),
     models: mSort(models),
@@ -345,7 +433,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 </style></head><body>
 <h1>Token 用量统计</h1>
 <div class="sub">逐条精确 Token 统计 · 每 5 秒自动刷新 <span id="pulse"></span> · <span id="upd"></span></div>
-<div style="margin:-6px 0 12px"><span class="pills" id="srcp"><button data-s="all" class="on">全部来源</button><button data-s="wb">WorkBuddy</button><button data-s="dsh">DSH</button></span></div>
+<div style="margin:-6px 0 12px"><span class="pills" id="srcp"><button data-s="all" class="on">全部来源</button><button data-s="wb">WorkBuddy</button><button data-s="dsh">DSH</button><button data-s="codex">Codex</button></span></div>
 <div class="metrics" id="metrics"></div>
 <div class="panel"><div class="pt">Token 活跃 <span class="desc" id="hmMax"></span></div>
 <div class="hmgrid" id="hm"></div><div class="mlabels" id="hmM"></div>
@@ -358,7 +446,7 @@ svg{width:100%;display:block}.ax{fill:#667391;font-size:10px}
 <div class="pills" id="msel" style="flex-wrap:wrap;margin:4px 0 12px"></div><div id="mbars"></div></div>
 <div class="panel"><div class="pt">费用 <span class="desc" id="coinsSince"></span></div><div class="coins" id="coins"></div>
 <div class="desc" style="margin-top:8px">费用只对配置了价目的模型折算（缓存命中按命中价）；无价目模型只计 token 不折钱。</div></div>
-<div class="foot">数据源：WorkBuddy 会话 transcript + DSH 会话 zstd 归档（顶部可拆分查看；可选扩展：附加 JSONL / ledger.json） · node usage-server.js</div>
+<div class="foot">数据源：WorkBuddy 会话 transcript + DSH 会话 zstd 归档 + Codex rollout jsonl（顶部可拆分查看；可选扩展：附加 JSONL / ledger.json） · node usage-server.js</div>
 <div id="tip"></div>
 <script>
 var COL={Qwen:'#4c8dff','custom-local:Qwen':'#8fb8ff',DeepSeek:'#f0b35c',GLM:'#7ee0a3',unknown:'#667391'};
@@ -380,11 +468,12 @@ function metrics(v,D){
   var tot=v.total.in+v.total.out;
   var topM=v.models[0]?v.models[0].m:'-';
   var ct=0,ca=0;   // 缓存命中按当前源视图累加
-  if(SRC!=='dsh'&&D.wb){ct+=D.wb.today.cached;ca+=D.wb.total.cached}
-  if(SRC!=='wb'&&D.dsh){ct+=D.dsh.today.cached;ca+=D.dsh.total.cached}
+  if((SRC==='all'||SRC==='wb')&&D.wb){ct+=D.wb.today.cached;ca+=D.wb.total.cached}
+  if((SRC==='all'||SRC==='dsh')&&D.dsh){ct+=D.dsh.today.cached;ca+=D.dsh.total.cached}
+  if((SRC==='all'||SRC==='codex')&&D.codex){ct+=D.codex.today.cached;ca+=D.codex.total.cached}
   var items=[['Token 消耗总量',fN(tot),''],['今日 Token',fN(v.today.in+v.today.out),'']];
-  if(D.extra){var wbT=D.wb?D.wb.today:{in:0,out:0},dsT=D.dsh?D.dsh.today:{in:0,out:0};
-    items.push(['WorkBuddy 今日',fN(wbT.in+wbT.out),'p'],['DSH 今日',fN(dsT.in+dsT.out),'b'],['附加源今日',fN((D.today.in+D.today.out)-(wbT.in+wbT.out)-(dsT.in+dsT.out)),''])}
+  if(D.extra){var wbT=D.wb?D.wb.today:{in:0,out:0},dsT=D.dsh?D.dsh.today:{in:0,out:0},cdX=D.codex?D.codex.today:{in:0,out:0};
+    items.push(['WorkBuddy 今日',fN(wbT.in+wbT.out),'p'],['DSH 今日',fN(dsT.in+dsT.out),'b'],['Codex 今日',fN(cdX.in+cdX.out),''],['附加源今日',fN((D.today.in+D.today.out)-(wbT.in+wbT.out)-(dsT.in+dsT.out)-(cdX.in+cdX.out)),''])}
   items=items.concat([
    ['缓存命中·今日',fN(ct),'p'],['缓存命中·累计',fN(ca),'p'],['对话数',v.total.n.toLocaleString('zh-CN'),'b'],
    ['活跃天数',v.days.length,''],['连续活跃',streak(v.days)+' 天',''],['主力模型',topM,'']]);
@@ -497,7 +586,7 @@ function coins(d){
    return '<div class="coin"><div class="lb">'+x[0]+'</div><div class="v" style="color:'+(x[2]||'#dbe4f3')+'">'+fY(x[1])+'</div></div>'}).join('');
 }
 function render(){if(!D)return;var V=view(D);metrics(V,D);heatmap(V);trend(V);pie(V);breakdown(V);coins(D);
-  document.getElementById('srcp').style.display=(D.dsh&&D.dsh.total.n)?'':'none';   // DSH 无数据时不出现空开关
+  document.getElementById('srcp').style.display=((D.dsh&&D.dsh.total.n)||(D.codex&&D.codex.total.n))?'':'none';   // DSH/Codex 均无数据时才收起来源开关
   var w=(D.wb&&D.wb.warmed&&D.dsh&&D.dsh.warmed)?'':'（历史数据正在预热扫描…）';
   document.getElementById('upd').textContent='最近刷新时间：'+D.updated+' '+w}
 async function tick(){try{D=await (await fetch('/api/data')).json();document.getElementById('pulse').className='on';render()}catch(e){document.getElementById('pulse').className=''}}
